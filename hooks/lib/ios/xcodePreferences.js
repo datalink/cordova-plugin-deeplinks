@@ -172,7 +172,9 @@ function loadProjectFile() {
               fs.writeFileSync(pbxPath, xcodeproj.writeSync());
                   if (Object.keys(frameworks).length === 0){
                       // If there is no framework references remain in the project, just remove this file
-                      require('shelljs').rm('-rf', frameworks_file);
+                      if (fs.existsSync(frameworks_file)) {
+                          fs.rmSync(frameworks_file, { force: true });
+                      }
                       return;
                   }
                   fs.writeFileSync(frameworks_file, JSON.stringify(this.frameworks, null, 4));
