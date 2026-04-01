@@ -91,15 +91,15 @@ function activateAssociativeDomains(xcodeProject) {
  */
 function addPbxReference(xcodeProject) {
   var fileReferenceSection = nonComments(xcodeProject.pbxFileReferenceSection());
-  var entitlementsFileName = path.basename(pathToEntitlementsFile());
+  var entitlementsRelativeFilePath = pathToEntitlementsFile();
 
-  if (isPbxReferenceAlreadySet(fileReferenceSection, entitlementsFileName)) {
-    console.log('Entitlements file is in reference section.');
-    return;
+  if (isPbxReferenceAlreadySet(fileReferenceSection, entitlementsRelativeFilePath)) {
+      console.log('Entitlements file is in reference section.');
+      return;
   }
 
   console.log('Entitlements file is not in references section, adding it');
-  xcodeProject.addResourceFile(entitlementsFileName);
+  xcodeProject.addResourceFile(entitlementsRelativeFilePath);
 }
 
 /**
@@ -110,19 +110,22 @@ function addPbxReference(xcodeProject) {
  * @return true - if reference is set; otherwise - false
  */
 function isPbxReferenceAlreadySet(fileReferenceSection, entitlementsRelativeFilePath) {
-  var isAlreadyInReferencesSection = false;
   var uuid;
   var fileRefEntry;
-
+  var entitlementsFileName = path.basename(entitlementsRelativeFilePath);
   for (uuid in fileReferenceSection) {
-    fileRefEntry = fileReferenceSection[uuid];
-    if (fileRefEntry.path && fileRefEntry.path.indexOf(entitlementsRelativeFilePath) > -1) {
-      isAlreadyInReferencesSection = true;
-      break;
-    }
+      fileRefEntry = fileReferenceSection[uuid];
+      if (!fileRefEntry) {
+          continue;
+      }
+      if (fileRefEntry.path && fileRefEntry.path.indexOf(entitlementsRelativeFilePath) > -1) {
+          return true;
+      }
+      if (fileRefEntry.name && fileRefEntry.name.indexOf(entitlementsFileName) > -1) {
+          return true;
+      }
   }
-
-  return isAlreadyInReferencesSection;
+  return false;
 }
 
 // region Xcode project file helpers
