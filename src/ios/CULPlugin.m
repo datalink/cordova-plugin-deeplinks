@@ -22,12 +22,19 @@
     NSMutableDictionary<NSString *, NSString *> *_subscribers;
 }
 
+// Scene hooks
 + (void)installContinueUserActivityHookIfNeeded;
++ (void)installSceneHooksIfNeeded;
++ (void)consumeExistingSceneUserActivitiesIfNeeded;
 
 @end
 
 static BOOL cul_continueUserActivityHookInstalled = NO;
 static IMP cul_originalContinueUserActivityImp = NULL;
+
+static BOOL cul_sceneHooksInstalled = NO;
+static IMP cul_originalSceneContinueUserActivityImp = NULL;
+static IMP cul_originalSceneWillConnectImp = NULL;
 
 static BOOL CULHandleUserActivityForDelegate(id delegate, NSUserActivity *userActivity) {
     if (userActivity == nil || ![userActivity.activityType isEqualToString:NSUserActivityTypeBrowsingWeb] || userActivity.webpageURL == nil) {
@@ -58,6 +65,50 @@ static BOOL CULHandleUserActivityForDelegate(id delegate, NSUserActivity *userAc
     return handled;
 }
 
+static CULPlugin *CULResolvePluginFromScene(UIScene *scene) {
+    if (scene == nil || ![scene isKindOfClass:[UIWindowScene class]]) {
+        NSLog(@"[UniversalLinks] Scene is not a UIWindowScene: %@", scene);
+        return nil;
+    }
+
+    UIWindowScene *windowScene = (UIWindowScene *)scene;
+    UIWindow *window = nil;
+    for (UIWindow *candidate in windowScene.windows) {
+        if (candidate.isKeyWindow) {
+            window = candidate;
+            break;
+        }
+    }
+    if (window == nil) {
+        window = windowScene.windows.firstObject;
+    }
+
+    id rootViewController = window.rootViewController;
+    if (![rootViewController isKindOfClass:[CDVViewController class]]) {
+        NSLog(@"[UniversalLinks] Scene rootViewController is not CDVViewController: %@", rootViewController);
+        return nil;
+    }
+
+    CULPlugin *plugin = [(CDVViewController *)rootViewController getCommandInstance:@"UniversalLinks"];
+    NSLog(@"[UniversalLinks] Scene resolved plugin instance=%@", plugin);
+    return plugin;
+}
+
+static BOOL CULHandleUserActivityForScene(UIScene *scene, NSUserActivity *userActivity) {
+    if (userActivity == nil || ![userActivity.activityType isEqualToString:NSUserActivityTypeBrowsingWeb] || userActivity.webpageURL == nil) {
+        return NO;
+    }
+
+    CULPlugin *plugin = CULResolvePluginFromScene(scene);
+    if (plugin == nil) {
+        return NO;
+    }
+
+    BOOL handled = [plugin handleUserActivity:userActivity];
+    NSLog(@"[UniversalLinks] Scene hook handled user activity=%@", handled ? @"YES" : @"NO");
+    return handled;
+}
+
 static BOOL cul_swizzled_continueUserActivity(id selfObj, SEL _cmd, UIApplication *application, NSUserActivity *userActivity, void (^restorationHandler)(NSArray *)) {
     NSLog(@"[UniversalLinks] Swizzled continueUserActivity activityType=%@ url=%@", userActivity.activityType, userActivity.webpageURL);
 
@@ -70,6 +121,31 @@ static BOOL cul_swizzled_continueUserActivity(id selfObj, SEL _cmd, UIApplicatio
 
     BOOL pluginHandled = CULHandleUserActivityForDelegate(selfObj, userActivity);
     return originalHandled || pluginHandled;
+}
+
+static void cul_swizzled_sceneContinueUserActivity(id selfObj, SEL _cmd, UIScene *scene, NSUserActivity *userActivity) {
+    NSLog(@"[UniversalLinks] Swizzled scene continueUserActivity activityType=%@ url=%@", userActivity.activityType, userActivity.webpageURL);
+
+    if (cul_originalSceneContinueUserActivityImp != NULL) {
+        void (*originalFunc)(id, SEL, UIScene *, NSUserActivity *) = (void (*)(id, SEL, UIScene *, NSUserActivity *))cul_originalSceneContinueUserActivityImp;
+        originalFunc(selfObj, _cmd, scene, userActivity);
+    }
+
+    CULHandleUserActivityForScene(scene, userActivity);
+}
+
+static void cul_swizzled_sceneWillConnect(id selfObj, SEL _cmd, UIScene *scene, UISceneSession *session, UISceneConnectionOptions *connectionOptions) {
+    NSLog(@"[UniversalLinks] Swizzled scene willConnectToSession options=%@", connectionOptions);
+
+    if (cul_originalSceneWillConnectImp != NULL) {
+        void (*originalFunc)(id, SEL, UIScene *, UISceneSession *, UISceneConnectionOptions *) = (void (*)(id, SEL, UIScene *, UISceneSession *, UISceneConnectionOptions *))cul_originalSceneWillConnectImp;
+        originalFunc(selfObj, _cmd, scene, session, connectionOptions);
+    }
+
+    for (NSUserActivity *activity in connectionOptions.userActivities) {
+        NSLog(@"[UniversalLinks] Swizzled scene willConnectToSession userActivity=%@", activity.webpageURL);
+        CULHandleUserActivityForScene(scene, activity);
+    }
 }
 
 @implementation CULPlugin
@@ -111,10 +187,90 @@ static BOOL cul_swizzled_continueUserActivity(id selfObj, SEL _cmd, UIApplicatio
 - (void)pluginInitialize {
     [self localInit];
     [[self class] installContinueUserActivityHookIfNeeded];
+    [[self class] installSceneHooksIfNeeded];
+    [[self class] consumeExistingSceneUserActivitiesIfNeeded];
     NSLog(@"[UniversalLinks] pluginInitialize supportedHosts=%@", _supportedHosts);
     // Can be used for testing.
     // Just uncomment, close the app and reopen it. That will simulate application launch from the link.
 //    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(onResume:) name:UIApplicationWillEnterForegroundNotification object:nil];
+}
+
+// Scene hooks
++ (Class)sceneDelegateClassIfAvailable {
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        id delegate = scene.delegate;
+        if (delegate != nil) {
+            return [delegate class];
+        }
+    }
+
+    NSDictionary *sceneManifest = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"UIApplicationSceneManifest"];
+    NSDictionary *sceneConfigurations = sceneManifest[@"UISceneConfigurations"];
+    NSArray *applicationConfigs = sceneConfigurations[@"UIWindowSceneSessionRoleApplication"];
+    NSDictionary *firstConfig = applicationConfigs.firstObject;
+    NSString *delegateClassName = firstConfig[@"UISceneDelegateClassName"];
+    if (delegateClassName.length == 0) {
+        return Nil;
+    }
+
+    if ([delegateClassName containsString:@"$(PRODUCT_MODULE_NAME)"]) {
+        NSString *moduleName = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleExecutable"];
+        delegateClassName = [delegateClassName stringByReplacingOccurrencesOfString:@"$(PRODUCT_MODULE_NAME)" withString:moduleName ?: @""];
+    }
+
+    return NSClassFromString(delegateClassName);
+}
+
++ (void)installSceneHooksIfNeeded {
+    if (cul_sceneHooksInstalled) {
+        return;
+    }
+
+    Class sceneDelegateClass = [self sceneDelegateClassIfAvailable];
+    if (sceneDelegateClass == Nil) {
+        NSLog(@"[UniversalLinks] No SceneDelegate class found for scene hook installation");
+        return;
+    }
+
+    SEL continueSelector = @selector(scene:continueUserActivity:);
+    Method continueMethod = class_getInstanceMethod(sceneDelegateClass, continueSelector);
+    IMP continueImp = (IMP)cul_swizzled_sceneContinueUserActivity;
+    const char *continueTypes = "v@:@@";
+
+    if (continueMethod != NULL) {
+        cul_originalSceneContinueUserActivityImp = method_getImplementation(continueMethod);
+        method_setImplementation(continueMethod, continueImp);
+        NSLog(@"[UniversalLinks] Installed scene continueUserActivity hook on %@ (existing implementation)", NSStringFromClass(sceneDelegateClass));
+    } else {
+        BOOL added = class_addMethod(sceneDelegateClass, continueSelector, continueImp, continueTypes);
+        NSLog(@"[UniversalLinks] Installed scene continueUserActivity hook on %@ (added=%@)", NSStringFromClass(sceneDelegateClass), added ? @"YES" : @"NO");
+    }
+
+    SEL willConnectSelector = @selector(scene:willConnectToSession:options:);
+    Method willConnectMethod = class_getInstanceMethod(sceneDelegateClass, willConnectSelector);
+    IMP willConnectImp = (IMP)cul_swizzled_sceneWillConnect;
+    const char *willConnectTypes = "v@:@@@";
+
+    if (willConnectMethod != NULL) {
+        cul_originalSceneWillConnectImp = method_getImplementation(willConnectMethod);
+        method_setImplementation(willConnectMethod, willConnectImp);
+        NSLog(@"[UniversalLinks] Installed scene willConnectToSession hook on %@ (existing implementation)", NSStringFromClass(sceneDelegateClass));
+    } else {
+        BOOL added = class_addMethod(sceneDelegateClass, willConnectSelector, willConnectImp, willConnectTypes);
+        NSLog(@"[UniversalLinks] Installed scene willConnectToSession hook on %@ (added=%@)", NSStringFromClass(sceneDelegateClass), added ? @"YES" : @"NO");
+    }
+
+    cul_sceneHooksInstalled = YES;
+}
+
++ (void)consumeExistingSceneUserActivitiesIfNeeded {
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        NSUserActivity *userActivity = scene.userActivity;
+        if (userActivity != nil) {
+            NSLog(@"[UniversalLinks] Consuming existing scene userActivity url=%@", userActivity.webpageURL);
+            CULHandleUserActivityForScene(scene, userActivity);
+        }
+    }
 }
 
 //- (void)onResume:(NSNotification *)notification {
