@@ -14,7 +14,7 @@
   <issue>https://github.com/e-imaxina/cordova-plugin-deeplinks/issues</issue>
 
   <engines>
-    <engine name="cordova-ios" version=">=3.8"></engine>
+    <engine name="cordova-ios" version=">=8"></engine>
     <engine name="cordova-android" version=">=4"></engine>
   </engines>
 
@@ -28,8 +28,6 @@
   <hook src="hooks/beforePluginInstallHook.js" type="before_plugin_install" />
 
   <platform name="ios">
-    <hook src="hooks/iosBeforePrepareHook.js" type="before_prepare" />
-
 <!-- Plugin inclusion in Cordova config.xml  -->
     <config-file parent="/*" target="config.xml">
       <feature name="UniversalLinks">
