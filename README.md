@@ -1,6 +1,12 @@
-# Cordova Deeplinks Plugin
+# Datalink's Cordova Deeplinks Plugin
 
 **NOTE:** This is a fork from the original cordova plugin "cordova-deeplinks" that in turn is a fork from "cordova-universal-links-plugin"
+
+## Changes
+
+- March 2026: Now supports cordova-ios@8 and XCode 26, by rewriting the plugin to use Scene APIs.
+
+## Original Documentation
 
 This Cordova plugin adds support for opening an application from the browser when user clicks on the link. Better known as:
 - [Universal Links on iOS](https://developer.apple.com/library/ios/documentation/General/Conceptual/AppSearch/UniversalLinks.html)
